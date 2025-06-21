@@ -91,6 +91,7 @@ jobs:
         [ -f $CONFIG_FILE ] && cat $CONFIG_FILE >> openwrt/.config
         cd openwrt
         rm target/linux/rockchip/patches-*/991-arm64-dts-rockchip-add-more-cpu-operating-points-for.patch || true
+        sed -i 's|6.12|6.6|g' target/linux/rockchip/Makefile
         chmod +x $GITHUB_WORKSPACE/$INSTALL5G_SH && $GITHUB_WORKSPACE/$INSTALL5G_SH
         chmod +x $GITHUB_WORKSPACE/$SETTINGS_SH && $GITHUB_WORKSPACE/$SETTINGS_SH
         chmod +x $GITHUB_WORKSPACE/$PACKAGES_SH && $GITHUB_WORKSPACE/$PACKAGES_SH
