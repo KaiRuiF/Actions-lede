@@ -66,7 +66,7 @@ jobs:
           git clone $REPO_URL --depth 1 -b $REPO_BRANCH openwrt
           echo "REPO_BRANCH=$REPO_BRANCH" >> $GITHUB_ENV
           ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
-          
+
       - name: 检查空间使用情况1
         if: (!cancelled())
         run: df -hT
@@ -99,7 +99,6 @@ jobs:
           echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
 
       - name: Cache Toolchain
-        if: env.CACHE_TOOLCHAIN == 'true'
         uses: HiGarfield/cachewrtbuild@main
         with:
           ccache: false
