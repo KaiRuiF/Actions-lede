@@ -66,14 +66,7 @@ jobs:
           git clone $REPO_URL --depth 1 -b $REPO_BRANCH openwrt
           echo "REPO_BRANCH=$REPO_BRANCH" >> $GITHUB_ENV
           ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
-
-      - name: Combine Disks
-        uses: easimon/maximize-build-space@master
-        with:
-          swap-size-mb: 1024
-          temp-reserve-mb: 100
-          root-reserve-mb: 1024
-
+          
       - name: 检查空间使用情况1
         if: (!cancelled())
         run: df -hT
