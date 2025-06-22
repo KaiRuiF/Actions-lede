@@ -17,9 +17,9 @@ on:
   repository_dispatch:
   workflow_dispatch:
   schedule:
-   - cron: 0 20 * * 2
-   #     分,时,日,月,周。每周三 20时执行一次 (UTC时间)
-  
+    - cron: 0 20 * * 2
+    #     分,时,日,月,周。每周三 20时执行一次 (UTC时间)
+
 env:
   FREE_DISK_SH: scripts/free_disk_space.sh
   ENV_SH: scripts/environment.sh
@@ -38,217 +38,241 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-    - name: 检查
-      uses: actions/checkout@main
+      - name: 检查
+        uses: actions/checkout@main
 
-    - name: 初始化环境
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        chmod +x $FREE_DISK_SH && $FREE_DISK_SH
-        sudo -E apt-get -qq update -y
-        sudo -E apt-get -qq full-upgrade -y
-        chmod +x $ENV_SH && $ENV_SH
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-        sudo timedatectl set-timezone "$TZ"
-        docker image prune -a -f
-        docker container prune -f
-        sudo mkdir -p /workdir
-        sudo chown $USER:$GROUPS /workdir
+      - name: 初始化环境
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          chmod +x $FREE_DISK_SH && $FREE_DISK_SH
+          sudo -E apt-get -qq update -y
+          sudo -E apt-get -qq full-upgrade -y
+          chmod +x $ENV_SH && $ENV_SH
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo timedatectl set-timezone "$TZ"
+          docker image prune -a -f
+          docker container prune -f
+          sudo mkdir -p /workdir
+          sudo chown $USER:$GROUPS /workdir
 
-    - name: 检查空间使用情况1
-      if: (!cancelled())
-      run: df -hT
+      - name: 检查空间使用情况1
+        if: (!cancelled())
+        run: df -hT
 
-    - name: 克隆源码
-      working-directory: /workdir
-      run: |
-        git clone $REPO_URL --depth 1 -b $REPO_BRANCH openwrt
-        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+      - name: 克隆源码
+        working-directory: /workdir
+        run: |
+          git clone $REPO_URL --depth 1 -b $REPO_BRANCH openwrt
+          echo "REPO_BRANCH=$REPO_BRANCH" >> $GITHUB_ENV
+          ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-    - name: 开启缓存
-      uses: klever1988/cachewrtbuild@main
-      with:
-        ccache: 'true'
-        mixkey: 'armv8'
-        prefix: ${{ github.workspace }}/openwrt
+      - name: Combine Disks
+        uses: easimon/maximize-build-space@master
+        with:
+          swap-size-mb: 1024
+          temp-reserve-mb: 100
+          root-reserve-mb: 1024
 
-    - name: 安装 feeds
-      run: |
-        cd openwrt
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
+      - name: 检查空间使用情况1
+        if: (!cancelled())
+        run: df -hT
 
-    - name: 导入补丁和配置 & 执行脚本
-      run: |
-        [ -d files ] && mv files openwrt/files || echo "files not found"
-        [ -f $PLATFORM_FILE ] && cat $PLATFORM_FILE >> openwrt/.config
-        [ -f $CONFIG_FILE ] && cat $CONFIG_FILE >> openwrt/.config
-        cd openwrt
-        rm target/linux/rockchip/patches-*/991-arm64-dts-rockchip-add-more-cpu-operating-points-for.patch || true
-        sed -i 's|6.12|6.6|g' target/linux/rockchip/Makefile
-        chmod +x $GITHUB_WORKSPACE/$SETTINGS_SH && $GITHUB_WORKSPACE/$SETTINGS_SH
+      - name: 安装 feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-    # - name: 下载文件
-    #   run: |
-    #     cd openwrt
-    #     make defconfig
-    #     make download -j8 V=10
-    #     find dl -size -1024c -exec ls -l {} \;
-    #     find dl -size -1024c -exec rm -f {} \;
+      - name: 导入补丁和配置 & 执行脚本
+        run: |
+          [ -d files ] && mv files openwrt/files || echo "files not found"
+          [ -f $PLATFORM_FILE ] && cat $PLATFORM_FILE >> openwrt/.config
+          [ -f $CONFIG_FILE ] && cat $CONFIG_FILE >> openwrt/.config
+          cd openwrt
+          echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
+          rm target/linux/rockchip/patches-*/991-arm64-dts-rockchip-add-more-cpu-operating-points-for.patch || true
+          sed -i 's|6.12|6.6|g' target/linux/rockchip/Makefile
+          chmod +x $GITHUB_WORKSPACE/$SETTINGS_SH && $GITHUB_WORKSPACE/$SETTINGS_SH
 
-    - name: 空间使用情况2
-      if: (!cancelled())
-      run: df -hT
+      - name: Generate Variables
+        run: |
+          cd $OPENWRT_PATH
+          SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
+          echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
+          DEVICE_TARGET=$(cat .config | grep CONFIG_TARGET_BOARD | awk -F '"' '{print $2}')
+          echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
+          DEVICE_SUBTARGET=$(cat .config | grep CONFIG_TARGET_SUBTARGET | awk -F '"' '{print $2}')
+          echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
 
-    - name: 编译工具链
-      id: mtools
-      run: |
-        cd openwrt
-        make defconfig
-        echo -e "$(($(nproc)+1)) thread compile"
-        make tools/compile -j$(($(nproc)+1)) || make tools/compile -j1 V=s
-        make toolchain/compile -j$(($(nproc)+1)) || make toolchain/compile -j1 V=s
-        echo "status=success" >> $GITHUB_OUTPUT
+      - name: Cache Toolchain
+        if: env.CACHE_TOOLCHAIN == 'true'
+        uses: HiGarfield/cachewrtbuild@main
+        with:
+          ccache: false
+          mixkey: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
+          prefix: ${{ env.OPENWRT_PATH }}
 
-    - name: 空间使用情况3_1
-      if: (!cancelled())
-      run: df -hT
+      # - name: 下载文件
+      #   run: |
+      #     cd openwrt
+      #     make defconfig
+      #     make download -j8 V=10
+      #     find dl -size -1024c -exec ls -l {} \;
+      #     find dl -size -1024c -exec rm -f {} \;
 
-    - name: 清除工具链编译中间产物...
-      if: steps.mtools.outputs.status == 'success' && !cancelled()
-      run: |
-        cd openwrt
-        rm -rf dl/*
-        rm -rf build_dir/toolchain-*
+      - name: 空间使用情况2
+        if: (!cancelled())
+        run: df -hT
 
-    - name: 空间使用情况3_2
-      if: (!cancelled())
-      run: df -hT
+      - name: 编译工具链
+        id: mtools
+        run: |
+          cd openwrt
+          make defconfig
+          echo -e "$(($(nproc)+1)) thread compile"
+          make tools/compile -j$(($(nproc)+1)) || make tools/compile -j1 V=s
+          make toolchain/compile -j$(($(nproc)+1)) || make toolchain/compile -j1 V=s
+          echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: 编译内核
-      id: mkernel
-      if: steps.mtools.outputs.status == 'success' && !cancelled()
-      run: |
-        cd openwrt
-        echo -e "$(($(nproc)+1)) thread compile"
-        make target/linux/compile -j$(($(nproc)+1)) || make target/linux/compile -j1 V=s
-        echo "status=success" >> $GITHUB_OUTPUT
+      - name: 空间使用情况3_1
+        if: (!cancelled())
+        run: df -hT
 
-    - name: 空间使用情况4
-      if: (!cancelled())
-      run: df -hT
+      - name: 清除工具链编译中间产物...
+        if: steps.mtools.outputs.status == 'success' && !cancelled()
+        run: |
+          cd openwrt
+          rm -rf dl/*
+          rm -rf build_dir/toolchain-*
 
-    - name: 编译插件
-      id: mpackage
-      if: steps.mkernel.outputs.status == 'success' && !cancelled()
-      run: |
-        cd openwrt
-        echo -e "$(($(nproc)+1)) thread compile"
-        make package/compile -j$(($(nproc)+1)) || make package/compile -j1 V=s
-        make package/index
-        make package/install -j$(nproc) || make package/install -j1 V=s
-        echo "status=success" >> $GITHUB_OUTPUT
+      - name: 空间使用情况3_2
+        if: (!cancelled())
+        run: df -hT
 
-    - name: 空间使用情况5
-      if: (!cancelled())
-      run: df -hT
+      - name: 编译内核
+        id: mkernel
+        if: steps.mtools.outputs.status == 'success' && !cancelled()
+        run: |
+          cd openwrt
+          echo -e "$(($(nproc)+1)) thread compile"
+          make target/linux/compile -j$(($(nproc)+1)) || make target/linux/compile -j1 V=s
+          echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: 清除插件编译文件
-      id: cpackage
-      if: steps.mpackage.outputs.status == 'success' && !cancelled()
-      run: |
-        cd openwrt
-        rm -rf build_dir/target-*/host
-        echo "status=success" >> $GITHUB_OUTPUT
+      - name: 空间使用情况4
+        if: (!cancelled())
+        run: df -hT
 
-    - name: 空间使用情况6
-      if: (!cancelled())
-      run: df -hT
+      - name: 编译插件
+        id: mpackage
+        if: steps.mkernel.outputs.status == 'success' && !cancelled()
+        run: |
+          cd openwrt
+          echo -e "$(($(nproc)+1)) thread compile"
+          make package/compile -j$(($(nproc)+1)) || make package/compile -j1 V=s
+          make package/index
+          make package/install -j$(nproc) || make package/install -j1 V=s
+          echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: 编译固件
-      id: compile
-      if: steps.cpackage.outputs.status == 'success' && !cancelled()
-      run: |
-        cd openwrt
-        echo -e "$(($(nproc)+1)) thread compile"
-        make target/install -j$(nproc) || make target/install -j1 V=s
-        make json_overview_image_info
-        make checksum
-        echo "status=success" >> $GITHUB_OUTPUT
+      - name: 空间使用情况5
+        if: (!cancelled())
+        run: df -hT
 
-    - name: 空间使用情况7
-      if: (!cancelled())
-      run: df -hT
+      - name: 清除插件编译文件
+        id: cpackage
+        if: steps.mpackage.outputs.status == 'success' && !cancelled()
+        run: |
+          cd openwrt
+          rm -rf build_dir/target-*/host
+          echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: 上传 bin 目录
-      uses: actions/upload-artifact@main
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      with:
-        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: openwrt/bin
+      - name: 空间使用情况6
+        if: (!cancelled())
+        run: df -hT
 
-    - name: 整理文件
-      id: organize
-      if: steps.compile.outputs.status == 'success'
-      run: |
-        cd openwrt/bin/targets/*/*
-        rm -rf *.bin
-        rm -rf *.buildinfo 
-        rm -rf *.json 
-        rm -rf *.manifest 
-        rm -rf packages
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
+      - name: 编译固件
+        id: compile
+        if: steps.cpackage.outputs.status == 'success' && !cancelled()
+        run: |
+          cd openwrt
+          echo -e "$(($(nproc)+1)) thread compile"
+          make target/install -j$(nproc) || make target/install -j1 V=s
+          make json_overview_image_info
+          make checksum
+          echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: 固件重命名
-      if: steps.organize.outputs.status == 'success'
-      shell: bash
-      run: |
-        cd openwrt/bin/targets/*/*
-        for file in *rockchip-armv8-*.gz; do
-          new_name=$(echo "$file" | sed 's/rockchip-armv8-//')
-          mv -v "$file" "$new_name"
-        done
+      - name: 空间使用情况7
+        if: (!cancelled())
+        run: df -hT
 
-    - name: 上传固件目录
-      uses: actions/upload-artifact@main
-      if: env.UPLOAD_FIRMWARE == 'true' && steps.organize.outputs.status == 'success' && !cancelled()
-      with:
-        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE }}
+      - name: 上传 bin 目录
+        uses: actions/upload-artifact@main
+        if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+        with:
+          name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+          path: openwrt/bin
 
-    - name: 生成发布标签
-      id: tag
-      if: env.UPLOAD_RELEASE == 'true' && steps.compile.outputs.status == 'success' && !cancelled()
-      run: |
-        echo -e "🎉 rockchip平台\n✅ 主线源码\n🍃 如出现不稳定可尝试cpu降频\n❗️ ip地址 : 192.168.8.1" >> release.txt
-        echo "release_tag=$(date +"%Y.%m.%d_Rockchip")" >> $GITHUB_OUTPUT
-        echo "status=success" >> $GITHUB_OUTPUT
+      - name: 整理文件
+        id: organize
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          cd openwrt/bin/targets/*/*
+          rm -rf *.bin
+          rm -rf *.buildinfo 
+          rm -rf *.json 
+          rm -rf *.manifest 
+          rm -rf packages
+          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+          echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: 上传固件到发布
-      uses: softprops/action-gh-release@v2.0.4
-      if: steps.tag.outputs.status == 'success' && !cancelled()
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.tag.outputs.release_tag }}
-        body_path: release.txt
-        files: ${{ env.FIRMWARE }}/*
+      - name: 固件重命名
+        if: steps.organize.outputs.status == 'success'
+        shell: bash
+        run: |
+          cd openwrt/bin/targets/*/*
+          for file in *rockchip-armv8-*.gz; do
+            new_name=$(echo "$file" | sed 's/rockchip-armv8-//')
+            mv -v "$file" "$new_name"
+          done
 
-    - name: 删除以前发布的固件
-      uses: dev-drprasad/delete-older-releases@v0.3.3
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
-      with:
-        keep_latest: 15
-        delete_tags: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 上传固件目录
+        uses: actions/upload-artifact@main
+        if: env.UPLOAD_FIRMWARE == 'true' && steps.organize.outputs.status == 'success' && !cancelled()
+        with:
+          name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+          path: ${{ env.FIRMWARE }}
 
-    - name: 删除以前的工作流程
-      uses: Mattraks/delete-workflow-runs@v2
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        repository: ${{ github.repository }}
-        retain_days: 1
-        keep_minimum_runs: 3
+      - name: 生成发布标签
+        id: tag
+        if: env.UPLOAD_RELEASE == 'true' && steps.compile.outputs.status == 'success' && !cancelled()
+        run: |
+          echo -e "🎉 rockchip平台\n✅ 主线源码\n🍃 如出现不稳定可尝试cpu降频\n❗️ ip地址 : 192.168.8.1" >> release.txt
+          echo "release_tag=$(date +"%Y.%m.%d_Rockchip")" >> $GITHUB_OUTPUT
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: 上传固件到发布
+        uses: softprops/action-gh-release@v2.0.4
+        if: steps.tag.outputs.status == 'success' && !cancelled()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          body_path: release.txt
+          files: ${{ env.FIRMWARE }}/*
+
+      - name: 删除以前发布的固件
+        uses: dev-drprasad/delete-older-releases@v0.3.3
+        if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
+        with:
+          keep_latest: 15
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 删除以前的工作流程
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          retain_days: 1
+          keep_minimum_runs: 3
